@@ -18,6 +18,7 @@ import threading
 from typing import Optional, Tuple
 
 import torch
+import os
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.hf_transformers_utils import get_processor, get_tokenizer
@@ -32,6 +33,8 @@ from sglang.srt.managers.io_struct import (
 from sglang.srt.managers.schedule_batch import ModelWorkerBatch, global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.split_batch_model_runner import SplitBatchModelRunner
+# from sglang.srt.model_executor.split_batch_async_model_runner import SplitBatchAsyncModelRunner
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import MultiprocessingSerializer, broadcast_pyobj, set_random_seed
 
@@ -68,16 +71,31 @@ class TpModelWorker:
             dtype=server_args.dtype,
             quantization=server_args.quantization,
         )
-        self.model_runner = ModelRunner(
-            model_config=self.model_config,
-            mem_fraction_static=server_args.mem_fraction_static,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-            tp_size=server_args.tp_size,
-            nccl_port=nccl_port,
-            server_args=server_args,
-            is_draft_worker=is_draft_worker,
-        )
+
+        model_name = os.path.basename(os.path.normpath(server_args.model_path))
+        
+        if "SplitBatch" in model_name:
+            self.model_runner = SplitBatchModelRunner(
+                model_config=self.model_config,
+                mem_fraction_static=server_args.mem_fraction_static,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                tp_size=server_args.tp_size,
+                nccl_port=nccl_port,
+                server_args=server_args,
+                is_draft_worker=is_draft_worker,
+            )
+        else:
+            self.model_runner = ModelRunner(
+                model_config=self.model_config,
+                mem_fraction_static=server_args.mem_fraction_static,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                tp_size=server_args.tp_size,
+                nccl_port=nccl_port,
+                server_args=server_args,
+                is_draft_worker=is_draft_worker,
+            )
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None
         else:
@@ -165,6 +183,7 @@ class TpModelWorker:
     ) -> Tuple[LogitsProcessorOutput, Optional[torch.Tensor]]:
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
         logits_output = self.model_runner.forward(forward_batch)
+
         if launch_done:
             launch_done.set()
 

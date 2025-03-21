@@ -205,6 +205,10 @@ class ForwardBatch:
     # For Qwen2-VL
     mrope_positions: torch.Tensor = None
 
+    # For SplitBatch
+    sub_batch_0: Optional[ForwardBatch] = None
+    sub_batch_1: Optional[ForwardBatch] = None
+
     @classmethod
     def init_new(
         cls,
@@ -248,6 +252,7 @@ class ForwardBatch:
             extend_input_logprob_token_ids_gpu=extend_input_logprob_token_ids_gpu,
         )
 
+        # TODO: tby: check whether this is needed with split batch
         if ret.global_num_tokens is not None:
             max_len = max(ret.global_num_tokens)
             ret.gathered_buffer = torch.zeros(
@@ -306,7 +311,13 @@ class ForwardBatch:
         if model_runner.server_args.lora_paths is not None:
             model_runner.lora_manager.prepare_lora_batch(ret)
 
+        # Init sub batches
+        if model_runner.is_split_batch:
+            ret.sub_batch_0 = ret.init_sub_batch(0, ret.batch_size // 2)
+            ret.sub_batch_1 = ret.init_sub_batch(ret.batch_size // 2, ret.batch_size)
+
         return ret
+        
 
     def _compute_mrope_positions(
         self, model_runner: ModelRunner, batch: ModelWorkerBatch
@@ -365,6 +376,73 @@ class ForwardBatch:
             axis=1,
         )
         self.mrope_positions = self.mrope_positions.to(torch.int64)
+
+        
+    def init_sub_batch(self, index_start: int, index_end: int, model_runner: ModelRunner):
+        ret = ForwardBatch()
+        ret.forward_mode = self.forward_mode
+        ret.batch_size = index_end - index_start
+        ret.input_ids = self.input_ids[index_start:index_end]
+        ret.req_pool_indices = self.req_pool_indices[index_start:index_end]
+        ret.seq_lens = self.seq_lens[index_start:index_end]
+        ret.out_cache_loc = self.out_cache_loc[index_start:index_end]
+
+        ret.seq_lens_sum = ret.seq_lens.sum()
+
+        # Should be used after the computing. 
+        ret.return_logprob = self.return_logprob
+        ret.top_logprobs_nums = None
+        ret.token_ids_logprobs = None
+
+        ret.positions = self.positions[index_start:index_end]
+
+        ret.extend_num_tokens = self.extend_num_tokens
+        ret.extend_seq_lens = self.extend_seq_lens[index_start:index_end]
+        ret.extend_prefix_lens = self.extend_prefix_lens[index_start:index_end]
+        ret.extend_start_loc = self.extend_start_loc[index_start:index_end]
+        ret.extend_prefix_lens_cpu = self.extend_prefix_lens_cpu[index_start:index_end]
+        ret.extend_seq_lens_cpu = self.extend_seq_lens_cpu[index_start:index_end]
+        ret.extend_logprob_start_lens_cpu = self.extend_logprob_start_lens_cpu[index_start:index_end]
+        ret.extend_input_logprob_token_ids_gpu = self.extend_input_logprob_token_ids_gpu[index_start:index_end]
+
+        ret.image_inputs = None
+
+        ret.encoder_cached = None
+        ret.encoder_lens = None
+        ret.encoder_lens_cpu = None
+        ret.encoder_out_cache_loc = None
+
+        ret.lora_paths = None
+
+        ret.input_embeds = None
+
+        ret.sampling_info = None
+
+        ret.req_to_token_pool = self.req_to_token_pool
+        ret.token_to_kv_pool = self.token_to_kv_pool
+        ret.attn_backend = self.attn_backend
+
+        ret.global_num_tokens = self.global_num_tokens
+        if ret.global_num_tokens is not None:
+            max_len = max(ret.global_num_tokens)
+            ret.gathered_buffer = torch.zeros(
+                (max_len * model_runner.tp_size, model_runner.model_config.hidden_size),
+                dtype=model_runner.dtype,
+                device=model_runner.device,
+            )
+        ret.can_run_dp_cuda_graph = self.can_run_dp_cuda_graph
+
+        ret.spec_info = self.spec_info
+        ret.spec_algorithm = self.spec_algorithm
+        ret.capture_hidden_mode = self.capture_hidden_mode
+
+        ret.padded_static_len = self.padded_static_len
+
+        ret.mrope_positions = None
+
+        ret.sub_batch_0 = None
+        ret.sub_batch_1 = None
+
 
 
 def compute_position_triton(
