@@ -72,30 +72,16 @@ class TpModelWorker:
             quantization=server_args.quantization,
         )
 
-        model_name = os.path.basename(os.path.normpath(server_args.model_path))
-        
-        if "SplitBatch" in model_name:
-            self.model_runner = SplitBatchModelRunner(
-                model_config=self.model_config,
-                mem_fraction_static=server_args.mem_fraction_static,
-                gpu_id=gpu_id,
-                tp_rank=tp_rank,
-                tp_size=server_args.tp_size,
-                nccl_port=nccl_port,
-                server_args=server_args,
-                is_draft_worker=is_draft_worker,
-            )
-        else:
-            self.model_runner = ModelRunner(
-                model_config=self.model_config,
-                mem_fraction_static=server_args.mem_fraction_static,
-                gpu_id=gpu_id,
-                tp_rank=tp_rank,
-                tp_size=server_args.tp_size,
-                nccl_port=nccl_port,
-                server_args=server_args,
-                is_draft_worker=is_draft_worker,
-            )
+        self.model_runner = ModelRunner(
+            model_config=self.model_config,
+            mem_fraction_static=server_args.mem_fraction_static,
+            gpu_id=gpu_id,
+            tp_rank=tp_rank,
+            tp_size=server_args.tp_size,
+            nccl_port=nccl_port,
+            server_args=server_args,
+            is_draft_worker=is_draft_worker,
+        )
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None
         else:

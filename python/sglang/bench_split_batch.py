@@ -1,45 +1,8 @@
 """
-Benchmark the latency of running a single static batch without a server.
-
-This script does not launch a server and uses the low-level APIs.
-It accepts server arguments (the same as launch_server.py) and benchmark arguments (e.g., batch size, input lengths).
-
-# Usage (latency test)
-## with dummy weights:
-python -m sglang.bench_one_batch --model-path meta-llama/Meta-Llama-3-8B-Instruct --load-format dummy
-## sweep through multiple data points and store (append) the results in a jsonl file:
-python -m sglang.bench_one_batch --model-path meta-llama/Meta-Llama-3-8B-Instruct --batch 1 12 14 --input-len 256 512 --output-len 32 256 --run-name test_run
-## run with profiling:
-python -m sglang.bench_one_batch --model-path meta-llama/Meta-Llama-3-8B-Instruct --batch 1 12 14 --input-len 256 512 --profile
 # Usage (correctness test):
-python -m sglang.bench_one_batch --model-path TinyLlama/TinyLlama-1.1B-Chat-v0.4 --correct
+python -m sglang.bench_split_batch --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 1
 
-## Reference output (of the correctness test above, can be gpu dependent):
-input_ids=[[1, 450, 7483, 310, 3444, 338], [1, 450, 7483, 310, 278, 3303, 13187, 290, 338], [1, 20628, 338, 263, 6575, 1460, 2462, 322, 306, 763]]
-
-prefill logits (first half): tensor([[-10.0312,  -9.5000,   0.8931,  ...,  -4.9414,  -3.2422,  -3.3633],
-        [-10.0312,  -9.5000,   0.8931,  ...,  -4.9414,  -3.2422,  -3.3633],
-        [ -9.1875, -10.2500,   2.7129,  ...,  -4.3359,  -4.0664,  -4.1328]],
-       device='cuda:0')
-
-prefill logits (final): tensor([[-8.3125, -7.1172,  3.3457,  ..., -4.9570, -4.1328, -3.4141],
-        [-8.9141, -9.0156,  4.1445,  ..., -4.9922, -4.4961, -4.0781],
-        [-9.6328, -9.0547,  4.0195,  ..., -5.3047, -4.7148, -4.4570]],
-       device='cuda:0')
-
-========== Prompt 0 ==========
-<s> The capital of France is Paris.
-The capital of the United States is Washington, D.C.
-
-
-========== Prompt 1 ==========
-<s> The capital of the United Kindom is London.
-The capital of the United Kingdom is London.
-The capital of the
-
-========== Prompt 2 ==========
-<s> Today is a sunny day and I like to go for a walk in the park.
-I'm going to the park
+#
 """
 
 import argparse
@@ -138,6 +101,8 @@ def load_model(server_args, port_args, tp_rank):
         dtype=server_args.dtype,
         quantization=server_args.quantization,
     )
+    model_config.is_split_batch = True
+    model_config.is_eaas = True
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
@@ -163,6 +128,11 @@ def prepare_inputs_for_correctness_test(bench_args, tokenizer):
         "The capital of France is",
         "The capital of the United Kindom is",
         "Today is a sunny day and I like",
+        "The capital of China is",
+        "The capital of the United States is",
+        "Today is a rainy day and I like",
+        "The capital of Japan is",
+        "The capital of Germany is",
     ]
     input_ids = [tokenizer.encode(p) for p in prompts]
     sampling_params = SamplingParams(
@@ -240,6 +210,7 @@ def extend(reqs, model_runner):
     batch.prepare_for_extend()
     model_worker_batch = batch.get_model_worker_batch()
     forward_batch = ForwardBatch.init_new(model_worker_batch, model_runner)
+    print(f"forward_batch.batch_size: {forward_batch.batch_size}")
     logits_output = model_runner.forward(forward_batch)
     next_token_ids = model_runner.sample(logits_output, forward_batch)
     return next_token_ids, logits_output.next_token_logits, batch
@@ -266,26 +237,37 @@ def correctness_test(
     configure_logger(server_args, prefix=f" TP{tp_rank}")
     rank_print = print if tp_rank == 0 else lambda *args, **kwargs: None
 
+    print("\nBegin correctness test ...\n")
     # Load the model
     model_runner, tokenizer = load_model(server_args, port_args, tp_rank)
+
+    print("\nModel loaded ...\n")
 
     # Prepare inputs
     input_ids, reqs = prepare_inputs_for_correctness_test(bench_args, tokenizer)
     rank_print(f"\n{input_ids=}\n")
+
+    print("\nPrepare inputs done ...\n")
 
     if bench_args.cut_len > 0:
         # Prefill
         next_token_ids, next_token_logits, batch = extend(reqs, model_runner)
         rank_print(f"prefill logits (first half): {next_token_logits} \n")
 
+    print("\nPrefill done ...\n")
+
     # Prepare extend inputs
     reqs = prepare_extend_inputs_for_correctness_test(
         bench_args, input_ids, reqs, model_runner
     )
 
+    print("\nPrepare extend inputs done ...\n")
+
     # Extend (prefill w/ KV cache)
     next_token_ids, next_token_logits, batch = extend(reqs, model_runner)
     rank_print(f"prefill logits (final): {next_token_logits} \n")
+
+    print("\nExtend done ...\n")
 
     # Decode
     output_ids = [input_ids[i] + [next_token_ids[i]] for i in range(len(input_ids))]
@@ -294,6 +276,8 @@ def correctness_test(
         next_token_ids_list = next_token_ids.tolist()
         for i in range(len(reqs)):
             output_ids[i].append(next_token_ids_list[i])
+
+    print("\nDecode done ...\n")
 
     # Print output texts
     for i in range(len(reqs)):
@@ -519,8 +503,6 @@ if __name__ == "__main__":
     server_args = ServerArgs.from_cli_args(args)
     server_args.trust_remote_code = True
     bench_args = BenchArgs.from_cli_args(args)
-
-    print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
 
     logging.basicConfig(
         level=getattr(logging, server_args.log_level.upper()),

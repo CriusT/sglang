@@ -37,6 +37,9 @@ from sglang.srt.utils import is_hip
 
 is_hip_ = is_hip()
 
+import logging
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
@@ -368,6 +371,13 @@ class CudaGraphRunner:
             capture_hidden_mode=self.capture_hidden_mode,
         )
 
+        stream_a = None
+        stream_b = None
+        if self.model_runner.is_split_batch and bs > 1 and forward_batch.forward_mode.is_decode():
+            forward_batch.init_sub_batches(self.model_runner)
+            stream_a = torch.cuda.Stream()
+            stream_b = torch.cuda.Stream()
+
         # Attention backend
         self.model_runner.attn_backend.init_forward_metadata_capture_cuda_graph(
             bs,
@@ -381,7 +391,10 @@ class CudaGraphRunner:
 
         # Run and capture
         def run_once():
-            logits_output = forward(input_ids, forward_batch.positions, forward_batch)
+            if stream_a is not None and stream_b is not None:
+                logits_output = forward(input_ids, forward_batch.positions, forward_batch.sub_batch_0, stream_a, stream_b)
+            else:
+                logits_output = forward(input_ids, forward_batch.positions, forward_batch)
             return logits_output.next_token_logits, logits_output.hidden_states
 
         for _ in range(2):
@@ -393,6 +406,7 @@ class CudaGraphRunner:
         torch.cuda.synchronize()
         self.model_runner.tp_group.barrier()
 
+        logger.info(f"Run with cuda graph")
         global global_graph_memory_pool
         with torch.cuda.graph(graph, pool=global_graph_memory_pool, stream=stream):
             out = run_once()

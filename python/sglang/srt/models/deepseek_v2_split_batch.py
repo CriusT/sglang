@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
 from torch import nn
+import logging
 from transformers import PretrainedConfig
 from vllm import _custom_ops as ops
 
@@ -64,10 +65,14 @@ from sglang.srt.models.deepseek_v2 import (
     all_gather
 )
 
+from sglang.srt.eaas.eaas_mock_client import EaasMockClient
+
 is_hip_ = is_hip()
 
 if is_cuda_available():
     from sgl_kernel import bmm_fp8
+
+logger = logging.getLogger(__name__)
 
 
 class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
@@ -81,6 +86,58 @@ class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
             config=config,
             quant_config=quant_config,
         )
+        self.top_k = config.num_experts_per_tok
+        self.renormalize = config.norm_topk_prob
+        self.topk_group = config.topk_group
+        self.num_expert_group = config.n_group
+        self.correction_bias = self.gate.e_score_correction_bias
+
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        eaas_client: Optional[EaasMockClient] = None,
+        layer_id: Optional[int] = None,
+    ) -> torch.Tensor:
+        if eaas_client is None:
+            return super().forward(hidden_states)
+        
+        num_tokens, hidden_dim = hidden_states.shape
+        # hidden_states: [num_tokens, hidden_size], torch.bfloat16
+        hidden_states = hidden_states.view(-1, hidden_dim)
+
+        router_logits = self.gate(hidden_states)
+
+        from sglang.srt.layers.moe.topk import select_experts
+        topk_weights, topk_ids = select_experts(
+            hidden_states=hidden_states,
+            router_logits=router_logits,
+            top_k=self.top_k,
+            use_grouped_topk=True,
+            renormalize=self.renormalize,
+            topk_group=self.topk_group,
+            num_expert_group=self.num_expert_group,
+            correction_bias=self.correction_bias
+        )
+
+        results = []
+        for i in range(hidden_states.shape[0]):
+            row_topk_ids = topk_ids[i:i+1]
+            server_addresses = eaas_client.get_server_addresses(row_topk_ids)
+            row_hidden_states = hidden_states[i:i+1]
+            eaas_client.moe_request_with_tensor(
+                server_addresses=server_addresses,
+                hidden_states=row_hidden_states,
+                seed=0,
+                layer_id=layer_id,
+                expert_ids=row_topk_ids.tolist(),
+            )
+            row_result = eaas_client.get_tensor_result()
+            results.append(row_result)
+
+
+        return torch.cat(results, dim=0)
+
 
 class DeepseekV2SplitBatchDecoderLayer(nn.Module):
 
@@ -195,20 +252,6 @@ class DeepseekV2SplitBatchDecoderLayer(nn.Module):
 
         return hidden_states, residual
     
-    def forward_dense_layer(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        assert isinstance(self.mlp, DeepseekV2MLP), "This layer is not a dense layer"
-        return self.forward(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            residual=residual
-        )
     
     def forward_attention(
         self,
@@ -239,16 +282,18 @@ class DeepseekV2SplitBatchDecoderLayer(nn.Module):
         self, 
         hidden_states: torch.Tensor, 
         forward_batch: ForwardBatch, 
-        residual: Optional[torch.Tensor]
+        residual: Optional[torch.Tensor],
+        eaas_client: Optional[EaasMockClient] = None,
+        layer_id: Optional[int] = None,
     ) -> torch.Tensor:
         if self.enable_dp_attention:
             hidden_states, start_idx, end_idx = all_gather(
                 hidden_states, forward_batch, self.tp_rank, self.tp_size, self.tp_group
             )
-            hidden_states = self.mlp(hidden_states)
+            hidden_states = self.mlp(hidden_states, eaas_client, layer_id)
             hidden_states = hidden_states[start_idx:end_idx]
         else:
-            hidden_states = self.mlp(hidden_states)
+            hidden_states = self.mlp(hidden_states, eaas_client, layer_id)
 
         return hidden_states, residual
 
@@ -265,6 +310,7 @@ class DeepseekV2SplitBatchModel(nn.Module):
         super().__init__()
         self.padding_id = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.first_k_dense_replace = config.first_k_dense_replace
 
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
@@ -282,40 +328,63 @@ class DeepseekV2SplitBatchModel(nn.Module):
             ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+    
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
+        eaas_client: Optional[EaasMockClient] = None,
+        stream_a: Optional[torch.cuda.Stream] = None,
+        stream_b: Optional[torch.cuda.Stream] = None,
     ) -> torch.Tensor:
+        
         hidden_states = self.embed_tokens(input_ids)
         residual = None
 
+        if forward_batch.batch_size == 1 or not forward_batch.forward_mode.is_decode():
+            # same to DeepseekV2Model.forward
+            for i in range(len(self.layers)):
+                layer = self.layers[i]
+                hidden_states, residual = layer(
+                    positions, hidden_states, forward_batch, residual
+                )
+            if not forward_batch.forward_mode.is_idle():
+                hidden_states, _ = self.norm(hidden_states, residual)
+            return hidden_states
+
         # Forward single batch for the first k dense replace layers
+        # logger.info(f"Forward single batch for the first {self.first_k_dense_replace} layers")
         hidden_states, residual = self.forward_single_batch(
             hidden_states, residual, positions, forward_batch
         )
 
         # Split the batch into two sub-batches
-        input_0, input_1 = self.split_batches(
-            hidden_states, residual, positions, forward_batch, 
-            split_index=forward_batch.batch_size // 2
-        )
+        # logger.info(f"Split the batch into two sub-batches")
+        hidden_states_list, residual_list, positions_list, forward_batches_list = \
+            self.split_batches(
+                hidden_states, residual, positions, forward_batch, 
+                split_index=forward_batch.batch_size // 2
+            )
 
         # Forward multiple batches for the remaining layers
-        output_0, output_1 = self.forward_multiple_batches(
-            [input_0, input_1]
+        # logger.info(f"Forward multiple batches for the remaining layers")
+        hidden_states_list, residual_list = self.forward_multiple_batches(
+            hidden_states_list, residual_list, positions_list, forward_batches_list, 
+            eaas_client, stream_a, stream_b
         )
 
         # Merge the outputs
-        hidden_states, residual = self.merge_outputs(output_0, output_1)
+        # logger.info(f"Merge the outputs")
+        hidden_states = torch.concat(hidden_states_list, dim=0)
+        residual = torch.concat(residual_list, dim=0)
 
+        # Post-process the outputs
+        # logger.info(f"Post-process the outputs")
         if not forward_batch.forward_mode.is_idle():
             hidden_states, _ = self.norm(hidden_states, residual)
 
         return hidden_states
-
         
     def forward_single_batch(
         self,
@@ -324,7 +393,7 @@ class DeepseekV2SplitBatchModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
     ):
-        for i in range(self.config.first_k_dense_replace):
+        for i in range(self.first_k_dense_replace):
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions, hidden_states, forward_batch, residual
@@ -337,6 +406,9 @@ class DeepseekV2SplitBatchModel(nn.Module):
         residual_list: List[torch.Tensor],
         positions_list: List[torch.Tensor],
         forward_batches: List[ForwardBatch],
+        eaas_client: Optional[EaasMockClient] = None,
+        stream_a: Optional[torch.cuda.Stream] = None,
+        stream_b: Optional[torch.cuda.Stream] = None,
     ) -> List[torch.Tensor]:
         """
         Forward pass for multiple batches with operations overlapping across layers.
@@ -350,17 +422,17 @@ class DeepseekV2SplitBatchModel(nn.Module):
         assert len(forward_batches) == 2, "This implementation supports exactly 2 batches"
         
         # Pre-create streams for asynchronous execution
-        stream_a = torch.cuda.Stream()
-        stream_b = torch.cuda.Stream()
+        # stream_a = torch.cuda.Stream()
+        # stream_b = torch.cuda.Stream()
         
-        remaining_layers = len(self.layers) - self.config.first_k_dense_replace
-        first_moe_layer = self.config.first_k_dense_replace
+        remaining_layers = len(self.layers) - self.first_k_dense_replace
+        first_moe_layer = self.first_k_dense_replace
         
         # Step 1: Initial attention for batch 0, layer 0
         with torch.cuda.stream(stream_a):
             hidden_states_list[0], residual_list[0] = self.layers[first_moe_layer].forward_attention(
                 positions=positions_list[0],
-                hidden_states = hidden_states_list[0],
+                hidden_states=hidden_states_list[0],
                 forward_batch=forward_batches[0],
                 residual=residual_list[0]
             )
@@ -393,7 +465,9 @@ class DeepseekV2SplitBatchModel(nn.Module):
                     hidden_states_list[0], residual_list[0] = self.layers[b0_layer].forward_moe(
                         hidden_states=hidden_states_list[0],
                         forward_batch=forward_batches[0],
-                        residual=residual_list[0]
+                        residual=residual_list[0],
+                        eaas_client=eaas_client,
+                        layer_id=b0_layer
                     )
             with torch.cuda.stream(stream_b):
                 if b1_op == "attn":
@@ -407,29 +481,26 @@ class DeepseekV2SplitBatchModel(nn.Module):
                     hidden_states_list[1], residual_list[1] = self.layers[b1_layer].forward_moe(
                         hidden_states=hidden_states_list[1],
                         forward_batch=forward_batches[1],
-                        residual=residual_list[1]
+                        residual=residual_list[1],
+                        eaas_client=eaas_client,
+                        layer_id=b1_layer
                     )
             
             # Synchronize before next step to ensure correct sequencing
             torch.cuda.synchronize()
         
-        # Final MOE operation for batch 1, last layer
+        # Final MoE operation for batch 1, last layer
         with torch.cuda.stream(stream_b):
             hidden_states_list[1], residual_list[1] = self.layers[-1].forward_moe(
                 hidden_states=hidden_states_list[1],
                 forward_batch=forward_batches[1],
-                residual=residual_list[1]
+                residual=residual_list[1],
+                eaas_client=eaas_client,
+                layer_id=len(self.layers) - 1
             )
         torch.cuda.synchronize()
         
-        # Final processing for each batch
-        outputs = []
-        for batch_idx in range(2):
-            hidden_states = self.norm(hidden_states_list[batch_idx])
-            output = self.lm_head(hidden_states)
-            outputs.append(output)
-        
-        return outputs
+        return hidden_states_list, residual_list
 
     @staticmethod
     def split_batches(
@@ -448,31 +519,10 @@ class DeepseekV2SplitBatchModel(nn.Module):
         positions_0 = positions[:split_index]
         positions_1 = positions[split_index:]
 
-        ret_0 = dict(
-            hidden_states=hidden_states_0,
-            residual=residual_0,
-            positions=positions_0,
-            forward_batch=forward_batch.sub_batch_0
-        )
-        ret_1 = dict(
-            hidden_states=hidden_states_1,
-            residual=residual_1,
-            positions=positions_1,
-            forward_batch=forward_batch.sub_batch_1
-        )
-
-        return ret_0, ret_1
-
-
-    @staticmethod
-    def merge_outputs(output_0, output_1):
-        hidden_states_0, residual_0 = output_0
-        hidden_states_1, residual_1 = output_1
-
-        hidden_states = torch.concat([hidden_states_0, hidden_states_1], dim=0)
-        residual = torch.concat([residual_0, residual_1], dim=0)
-
-        return hidden_states, residual
+        return [hidden_states_0, hidden_states_1], \
+                [residual_0, residual_1], \
+                [positions_0, positions_1], \
+                [forward_batch.sub_batch_0, forward_batch.sub_batch_1]
 
 
 class DeepseekV2SplitBatchForCausalLM(nn.Module):
@@ -505,8 +555,12 @@ class DeepseekV2SplitBatchForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
+        eaas_client: Optional[EaasMockClient] = None,
+        stream_a: Optional[torch.cuda.Stream] = None,
+        stream_b: Optional[torch.cuda.Stream] = None,
     ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions, forward_batch)
+        hidden_states = self.model(input_ids, positions, forward_batch, eaas_client, stream_a, stream_b)
+        # logger.info(f"Hidden states type: {type(hidden_states)}")
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )

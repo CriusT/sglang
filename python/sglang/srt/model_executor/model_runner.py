@@ -78,6 +78,8 @@ from sglang.srt.utils import (
     set_cuda_arch,
 )
 from sglang.utils import get_exception_traceback
+from sglang.srt.eaas.eaas_server_manager import EaasServerManager
+from sglang.srt.eaas.eaas_mock_client import EaasMockClient
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,15 @@ class ModelRunner:
         self.spec_algorithm = SpeculativeAlgorithm.from_string(
             server_args.speculative_algorithm
         )
+
+        self.is_split_batch = model_config.is_split_batch
+        self.is_eaas = model_config.is_eaas
+        self.eaas_client = None
+        self.eaas_server_manager = None
+        if self.is_eaas:
+            self.eaas_server_manager = EaasServerManager()
+            self.eaas_client = EaasMockClient(self.eaas_server_manager)
+            self.eaas_client.connect()
 
         # Model-specific adjustment
         if (
@@ -804,9 +815,14 @@ class ModelRunner:
 
     def forward_decode(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)
-        return self.model.forward(
-            forward_batch.input_ids, forward_batch.positions, forward_batch
-        )
+        if self.is_eaas:
+            return self.model.forward(
+                forward_batch.input_ids, forward_batch.positions, forward_batch, eaas_client=self.eaas_client
+            )
+        else:
+            return self.model.forward(
+                forward_batch.input_ids, forward_batch.positions, forward_batch
+            )
 
     def forward_extend(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)

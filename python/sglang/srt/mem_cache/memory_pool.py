@@ -326,6 +326,9 @@ class MLATokenToKVPool(BaseTokenToKVPool):
                 )
                 for _ in range(layer_num)
             ]
+        
+        logger.info(f"MLATokenToKVPool initialized with size {size}, dtype {dtype}, kv_lora_rank {kv_lora_rank}, qk_rope_head_dim {qk_rope_head_dim}, layer_num {layer_num}, device {device}, enable_memory_saver {enable_memory_saver}")
+        logger.info(f"kv_buffer shape: {self.kv_buffer[0].shape}")
 
     def get_key_buffer(self, layer_id: int):
         if self.store_dtype != self.dtype:
@@ -350,6 +353,7 @@ class MLATokenToKVPool(BaseTokenToKVPool):
         layer_id = layer.layer_id
         if cache_k.dtype != self.dtype:
             cache_k = cache_k.to(self.dtype)
+        # logger.info(f"kv_buffer target loc shape: {self.kv_buffer[layer_id][loc].shape}")
         if self.store_dtype != self.dtype:
             self.kv_buffer[layer_id][loc] = cache_k.view(self.store_dtype)
         else:

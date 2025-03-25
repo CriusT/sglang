@@ -50,6 +50,11 @@ class ModelConfig:
         self.revision = revision
         self.quantization = quantization
 
+        # For split batch models. 
+        # FIXME(boyu): This is a temporary hack.
+        self.is_split_batch = False
+        self.is_eaas = False
+
         # Parse args
         self.model_override_args = json.loads(model_override_args)
         kwargs = {}
