@@ -1,6 +1,6 @@
 """
 # Usage (correctness test):
-python -m sglang.bench_split_batch --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 1
+python -m sglang.bench_split_batch --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 1 --disable-cuda-graph
 
 #
 """
