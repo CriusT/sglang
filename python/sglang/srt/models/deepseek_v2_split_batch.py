@@ -128,13 +128,15 @@ class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
             row_topk_ids = topk_ids[i:i+1]
             server_addresses = eaas_client.get_server_addresses(row_topk_ids)
             row_hidden_states = hidden_states[i:i+1]
-            eaas_client.moe_request_with_tensor(
-                server_addresses=server_addresses,
-                hidden_states=row_hidden_states,
-                seed=0,
-                layer_id=layer_id,
-                expert_ids=row_topk_ids.tolist(),
-            )
+            topk_ids_list = row_topk_ids.tolist()
+            for i, server_address in enumerate(server_addresses):
+                eaas_client.moe_request_with_tensor(
+                    server_address=server_address,
+                    hidden_states=row_hidden_states,
+                    seed=0,
+                    layer_id=layer_id,
+                    expert_ids=topk_ids_list[i],
+                )
             row_result = eaas_client.get_tensor_result()
             results.append(row_result)
 
@@ -145,50 +147,6 @@ class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         return super().forward(hidden_states)
-
-    # def forward(
-    #     self,
-    #     hidden_states: torch.Tensor,
-    #     eaas_client: Optional[EaasMockClient] = None,
-    #     layer_id: Optional[int] = None,
-    # ) -> torch.Tensor:
-    #     if eaas_client is None:
-    #         return super().forward(hidden_states)
-        
-    #     num_tokens, hidden_dim = hidden_states.shape
-    #     # hidden_states: [num_tokens, hidden_size], torch.bfloat16
-    #     hidden_states = hidden_states.view(-1, hidden_dim)
-
-    #     router_logits = self.gate(hidden_states)
-
-    #     from sglang.srt.layers.moe.topk import select_experts
-    #     topk_weights, topk_ids = select_experts(
-    #         hidden_states=hidden_states,
-    #         router_logits=router_logits,
-    #         top_k=self.top_k,
-    #         use_grouped_topk=True,
-    #         renormalize=self.renormalize,
-    #         topk_group=self.topk_group,
-    #         num_expert_group=self.num_expert_group,
-    #         correction_bias=self.correction_bias
-    #     )
-
-    #     results = []
-    #     for i in range(hidden_states.shape[0]):
-    #         row_topk_ids = topk_ids[i:i+1]
-    #         server_addresses = eaas_client.get_server_addresses(row_topk_ids)
-    #         row_hidden_states = hidden_states[i:i+1]
-    #         eaas_client.moe_request_with_tensor(
-    #             server_addresses=server_addresses,
-    #             hidden_states=row_hidden_states,
-    #             seed=0,
-    #             layer_id=layer_id,
-    #             expert_ids=row_topk_ids.tolist(),
-    #         )
-    #         row_result = eaas_client.get_tensor_result()
-    #         results.append(row_result)
-
-    #     return torch.cat(results, dim=0)
 
 
 class DeepseekV2SplitBatchDecoderLayer(nn.Module):

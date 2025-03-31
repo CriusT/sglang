@@ -63,11 +63,11 @@ class EaasMockClient:
     
     def moe_request_with_tensor(
             self, 
-            server_addresses: List[int], 
+            server_address: str, 
             hidden_states: torch.Tensor,
             seed: int, 
             layer_id: int,
-            expert_ids: List[int],
+            expert_id: List[int],
     ) -> bool:
         """
         Mock perform MOE request with a tensor (device pointer).
