@@ -124,21 +124,36 @@ class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
         topk_ids: torch.Tensor,
     ) -> torch.Tensor:        
         results = []
+        
+        server_address_row_ids_dict = {}
+        server_address_expert_ids_dict = {}
+
         for i in range(hidden_states.shape[0]):
             row_topk_ids = topk_ids[i:i+1]
-            server_addresses = eaas_client.get_server_addresses(row_topk_ids)
-            row_hidden_states = hidden_states[i:i+1]
             topk_ids_list = row_topk_ids.tolist()
-            for i, server_address in enumerate(server_addresses):
-                eaas_client.moe_request_with_tensor(
-                    server_address=server_address,
-                    hidden_states=row_hidden_states,
-                    seed=0,
-                    layer_id=layer_id,
-                    expert_ids=topk_ids_list[i],
-                )
-            row_result = eaas_client.get_tensor_result()
-            results.append(row_result)
+            server_addresses = eaas_client.get_server_addresses(row_topk_ids)
+
+            for j, server_address in enumerate(server_addresses):
+                if server_address not in server_address_row_ids_dict:
+                    server_address_row_ids_dict[server_address] = []
+                if server_address not in server_address_expert_ids_dict:
+                    server_address_expert_ids_dict[server_address] = []
+                server_address_row_ids_dict[server_address].append(i)
+                server_address_expert_ids_dict[server_address].append(topk_ids_list[j])
+        
+        for server_address in server_address_row_ids_dict:
+            request_tensor = hidden_states[server_address_row_ids_dict[server_address]]
+            expert_ids = server_address_expert_ids_dict[server_address]
+            eaas_client.moe_request_with_tensor(
+                server_address=server_address,
+                hidden_states=request_tensor,
+                seed=0,
+                layer_id=layer_id,
+                expert_ids=expert_ids,
+            )
+
+        row_result = eaas_client.get_tensor_result()
+        results.append(row_result)
 
         return torch.cat(results, dim=0)
 
