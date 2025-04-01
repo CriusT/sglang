@@ -98,6 +98,12 @@ class EaasMockClient:
 
         return True
     
+    def wait_for_tensor_result(self, server_indices: List[int] = None, timeout_ms: int = 50000) -> Optional[List[torch.Tensor]]:
+        time.sleep(0.01)
+        ret = [self.last_hidden_states] * len(server_indices)
+        self.last_hidden_states = None
+        return ret
+
     def get_tensor_result(self, timeout_ms: int = 5000) -> Optional[torch.Tensor]:
         """
         Get the tensor result from the server with the same shape as what was written.

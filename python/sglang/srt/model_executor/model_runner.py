@@ -83,6 +83,10 @@ from sglang.srt.eaas.eaas_mock_client import EaasMockClient
 
 logger = logging.getLogger(__name__)
 
+import sys
+sys.path.append('/gpfs/users/tianboyu/cpu001/EaaS/EaaS_Server/python')
+from client import FabricClientManager
+
 
 SGLANG_CI_SMALL_KV_SIZE = os.getenv("SGLANG_CI_SMALL_KV_SIZE", None)
 UNBALANCED_MODEL_LOADING_TIMEOUT_S = 300
@@ -200,6 +204,7 @@ class ModelRunner:
                 "debug_tensor_dump_inject": server_args.debug_tensor_dump_inject,
                 "enable_eaas": server_args.enable_eaas,
                 "enable_eaas_split_batch": server_args.enable_eaas_split_batch,
+                "debug_activate_eaas": server_args.debug_activate_eaas,
             }
         )
 
@@ -209,8 +214,16 @@ class ModelRunner:
         self.enable_eaas_split_batch = server_args.enable_eaas_split_batch
         if server_args.enable_eaas:
             self.eaas_server_manager = EaasServerManager()
-            self.eaas_client = EaasMockClient(self.eaas_server_manager)
-            self.eaas_client.connect()
+            self.eaas_client = FabricClientManager()
+            # self.eaas_client = EaasMockClient(self.eaas_server_manager)
+
+            json_path = "/gpfs/users/liuziming/EaaS_Server/info/tensor_server_address.json"
+            device = "mlx5_03"
+            client_id = 17
+            cuda_device = 3
+            if server_args.debug_activate_eaas:
+                self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, 
+                                                                    client_id, cuda_device)
 
         set_cpu_offload_max_bytes(int(server_args.cpu_offload_gb * 1024**3))
 

@@ -181,6 +181,7 @@ class ServerArgs:
     # Eaas
     enable_eaas: Optional[bool] = False
     enable_eaas_split_batch: Optional[bool] = False
+    debug_activate_eaas: Optional[bool] = False
 
     def __post_init__(self):
         # Set missing default values
@@ -1016,6 +1017,12 @@ class ServerArgs:
             action="store_true",
             default=ServerArgs.enable_eaas_split_batch,
             help="Enable Eaas split batch",
+        )
+        parser.add_argument(
+            "--debug-activate-eaas",
+            action="store_true",
+            default=ServerArgs.debug_activate_eaas,
+            help="Using our model but control whether to use EaaS",
         )
         
         
