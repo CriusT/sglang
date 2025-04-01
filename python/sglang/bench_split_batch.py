@@ -1,6 +1,6 @@
 """
 # Usage (correctness test):
-python -m sglang.bench_split_batch --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 1 --disable-cuda-graph
+python /gpfs/users/tianboyu/cpu001/EaaS/sglang/python/sglang/bench_split_batch.py --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 1 --disable-cuda-graph
 
 #
 """
@@ -101,8 +101,7 @@ def load_model(server_args, port_args, tp_rank):
         dtype=server_args.dtype,
         quantization=server_args.quantization,
     )
-    model_config.is_split_batch = True
-    model_config.is_eaas = True
+    model_config.enable_eaas = server_args.enable_eaas
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
@@ -502,6 +501,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
     server_args.trust_remote_code = True
+    server_args.enable_eaas = True
+    server_args.enable_eaas_split_batch = True
     bench_args = BenchArgs.from_cli_args(args)
 
     logging.basicConfig(

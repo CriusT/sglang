@@ -34,13 +34,12 @@ def get_model_architecture(model_config: ModelConfig) -> Tuple[Type[nn.Module], 
     ):
         architectures = ["QuantMixtralForCausalLM"]
 
-    # Special handling for split batch DeepSeek models.
-    # FIXME(boyu): This is a temporary hack.
+    # Special handling for Eaas DeepSeek models.
     if (
-        model_config.is_split_batch
+        model_config.enable_eaas
         and "DeepseekV2ForCausalLM" in architectures
     ):
-        architectures = ["DeepseekV2SplitBatchForCausalLM"]
+        architectures = ["DeepseekV2EaasForCausalLM"]
 
 
     return ModelRegistry.resolve_model_cls(architectures)

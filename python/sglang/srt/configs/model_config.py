@@ -50,11 +50,6 @@ class ModelConfig:
         self.revision = revision
         self.quantization = quantization
 
-        # For split batch models. 
-        # FIXME(boyu): This is a temporary hack.
-        self.is_split_batch = False
-        self.is_eaas = False
-
         # Parse args
         self.model_override_args = json.loads(model_override_args)
         kwargs = {}
@@ -165,6 +160,10 @@ class ModelConfig:
         # Cache attributes
         self.hf_eos_token_id = self.get_hf_eos_token_id()
         self.image_token_id = getattr(self.hf_config, "image_token_id", None)
+
+        # Eaas
+        # FIXME(boyu): This is a temporary hack.
+        self.enable_eaas = False
 
     # adapted from https://github.com/vllm-project/vllm/blob/main/vllm/config.py#L289
     def get_total_num_kv_heads(self) -> int:

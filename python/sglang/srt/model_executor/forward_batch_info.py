@@ -315,7 +315,8 @@ class ForwardBatch:
             model_runner.lora_manager.prepare_lora_batch(ret)
 
         # Init sub batches
-        if model_runner.is_split_batch and ret.forward_mode.is_decode() and ret.batch_size > 1:
+        if model_runner.enable_eaas_split_batch and ret.forward_mode.is_decode() and ret.batch_size > 1:
+            assert model_runner.enable_eaas
             ret.init_sub_batches(model_runner)
 
         return ret

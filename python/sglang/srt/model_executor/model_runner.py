@@ -119,15 +119,6 @@ class ModelRunner:
             server_args.speculative_algorithm
         )
 
-        self.is_split_batch = model_config.is_split_batch
-        self.is_eaas = model_config.is_eaas
-        self.eaas_client = None
-        self.eaas_server_manager = None
-        if self.is_eaas:
-            self.eaas_server_manager = EaasServerManager()
-            self.eaas_client = EaasMockClient(self.eaas_server_manager)
-            self.eaas_client.connect()
-
         # Model-specific adjustment
         if (
             self.model_config.attention_arch == AttentionArch.MLA
@@ -207,8 +198,19 @@ class ModelRunner:
                 "flashinfer_mla_disable_ragged": server_args.flashinfer_mla_disable_ragged,
                 "debug_tensor_dump_output_folder": server_args.debug_tensor_dump_output_folder,
                 "debug_tensor_dump_inject": server_args.debug_tensor_dump_inject,
+                "enable_eaas": server_args.enable_eaas,
+                "enable_eaas_split_batch": server_args.enable_eaas_split_batch,
             }
         )
+
+        self.eaas_client = None
+        self.eaas_server_manager = None
+        self.enable_eaas = server_args.enable_eaas
+        self.enable_eaas_split_batch = server_args.enable_eaas_split_batch
+        if server_args.enable_eaas:
+            self.eaas_server_manager = EaasServerManager()
+            self.eaas_client = EaasMockClient(self.eaas_server_manager)
+            self.eaas_client.connect()
 
         set_cpu_offload_max_bytes(int(server_args.cpu_offload_gb * 1024**3))
 
@@ -815,11 +817,13 @@ class ModelRunner:
 
     def forward_decode(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)
-        if self.is_eaas:
+        if self.enable_eaas:
+            logger.info(f"Forward decode with EAAS")
             return self.model.forward(
                 forward_batch.input_ids, forward_batch.positions, forward_batch, eaas_client=self.eaas_client
             )
         else:
+            logger.info(f"Forward decode without EAAS")
             return self.model.forward(
                 forward_batch.input_ids, forward_batch.positions, forward_batch
             )

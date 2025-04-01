@@ -61,10 +61,12 @@ from sglang.srt.models.deepseek_v2 import (
     DeepseekV2MLP, 
     DeepseekV2Attention, 
     DeepseekV2AttentionMLA,
-    DeepseekV2MoE,
     all_gather
 )
 
+from sglang.srt.models.deepseek_v2_eaas_single_batch import (
+    DeepseekV2EaasMoE,
+)
 from sglang.srt.eaas.eaas_mock_client import EaasMockClient
 
 is_hip_ = is_hip()
@@ -75,96 +77,7 @@ if is_cuda_available():
 logger = logging.getLogger(__name__)
 
 
-class DeepseekV2SplitBatchMoE(DeepseekV2MoE):
-
-    def __init__(
-        self,
-        config: PretrainedConfig,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
-        super().__init__(
-            config=config,
-            quant_config=quant_config,
-        )
-        self.top_k = config.num_experts_per_tok
-        self.renormalize = config.norm_topk_prob
-        self.topk_group = config.topk_group
-        self.num_expert_group = config.n_group
-        self.correction_bias = self.gate.e_score_correction_bias
-
-    def forward_gate(
-        self,
-        hidden_states: torch.Tensor,
-    ) -> torch.Tensor:
-        num_tokens, hidden_dim = hidden_states.shape
-        # hidden_states: [num_tokens, hidden_size], torch.bfloat16
-        hidden_states = hidden_states.view(-1, hidden_dim)
-
-        router_logits = self.gate(hidden_states)
-
-        from sglang.srt.layers.moe.topk import select_experts
-        topk_weights, topk_ids = select_experts(
-            hidden_states=hidden_states,
-            router_logits=router_logits,
-            top_k=self.top_k,
-            use_grouped_topk=True,
-            renormalize=self.renormalize,
-            topk_group=self.topk_group,
-            num_expert_group=self.num_expert_group,
-            correction_bias=self.correction_bias
-        )
-
-        return topk_weights, topk_ids
-    
-    def forward_experts(
-        self,
-        hidden_states: torch.Tensor,
-        eaas_client: EaasMockClient,
-        layer_id: int,
-        topk_ids: torch.Tensor,
-    ) -> torch.Tensor:        
-        results = []
-        
-        server_address_row_ids_dict = {}
-        server_address_expert_ids_dict = {}
-
-        for i in range(hidden_states.shape[0]):
-            row_topk_ids = topk_ids[i:i+1]
-            topk_ids_list = row_topk_ids.tolist()
-            server_addresses = eaas_client.get_server_addresses(row_topk_ids)
-
-            for j, server_address in enumerate(server_addresses):
-                if server_address not in server_address_row_ids_dict:
-                    server_address_row_ids_dict[server_address] = []
-                if server_address not in server_address_expert_ids_dict:
-                    server_address_expert_ids_dict[server_address] = []
-                server_address_row_ids_dict[server_address].append(i)
-                server_address_expert_ids_dict[server_address].append(topk_ids_list[j])
-        
-        for server_address in server_address_row_ids_dict:
-            request_tensor = hidden_states[server_address_row_ids_dict[server_address]]
-            expert_ids = server_address_expert_ids_dict[server_address]
-            eaas_client.moe_request_with_tensor(
-                server_address=server_address,
-                hidden_states=request_tensor,
-                seed=0,
-                layer_id=layer_id,
-                expert_ids=expert_ids,
-            )
-
-        row_result = eaas_client.get_tensor_result()
-        results.append(row_result)
-
-        return torch.cat(results, dim=0)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-    ) -> torch.Tensor:
-        return super().forward(hidden_states)
-
-
-class DeepseekV2SplitBatchDecoderLayer(nn.Module):
+class DeepseekV2EaasSplitBatchDecoderLayer(nn.Module):
 
     def __init__(
         self,
@@ -228,7 +141,7 @@ class DeepseekV2SplitBatchDecoderLayer(nn.Module):
             and layer_id >= config.first_k_dense_replace
             and layer_id % config.moe_layer_freq == 0
         ):
-            self.mlp = DeepseekV2SplitBatchMoE(config=config, quant_config=quant_config)
+            self.mlp = DeepseekV2EaasMoE(config=config, quant_config=quant_config)
         else:
             self.mlp = DeepseekV2MLP(
                 hidden_size=config.hidden_size,
@@ -247,6 +160,8 @@ class DeepseekV2SplitBatchDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
+        eaas_client: Optional[EaasMockClient] = None,
+        layer_id: int = 0,
     ) -> torch.Tensor:
         # Self Attention
         if not forward_batch.forward_mode.is_idle():
@@ -326,14 +241,15 @@ class DeepseekV2SplitBatchDecoderLayer(nn.Module):
         eaas_client: EaasMockClient,
         layer_id: int,
         topk_ids: torch.Tensor,
+        topk_weights: torch.Tensor,
     ) -> torch.Tensor:
         
-        hidden_states = self.mlp.forward_experts(hidden_states, eaas_client, layer_id, topk_ids)
+        hidden_states = self.mlp.forward_experts(hidden_states, eaas_client, layer_id, topk_ids, topk_weights)
 
         return hidden_states, residual
 
 
-class DeepseekV2SplitBatchModel(nn.Module):
+class DeepseekV2EaasSplitBatchModel(nn.Module):
 
     fall_back_to_pt_during_load = False
 
@@ -352,9 +268,10 @@ class DeepseekV2SplitBatchModel(nn.Module):
             config.hidden_size,
             enable_tp=not global_server_args_dict["enable_dp_attention"],
         )
+        
         self.layers = nn.ModuleList(
             [
-                DeepseekV2SplitBatchDecoderLayer(
+                DeepseekV2EaasSplitBatchDecoderLayer(
                     config,
                     layer_id,
                     quant_config=quant_config,
@@ -524,7 +441,8 @@ class DeepseekV2SplitBatchModel(nn.Module):
                         residual=residual_list[0],
                         eaas_client=eaas_client,
                         layer_id=b0_layer,
-                        topk_ids=topk_ids_list[0]
+                        topk_ids=topk_ids_list[0],
+                        topk_weights=topk_weights_list[0]
                     )
                     # dp attention
                     hidden_states_list[0] = hidden_states_list[0][start_idx_list[0]:end_idx_list[0]] 
@@ -545,7 +463,8 @@ class DeepseekV2SplitBatchModel(nn.Module):
                         residual=residual_list[1],
                         eaas_client=eaas_client,
                         layer_id=b1_layer,
-                        topk_ids=topk_ids_list[1]
+                        topk_ids=topk_ids_list[1],
+                        topk_weights=topk_weights_list[1]
                     )
                     # dp attention
                     hidden_states_list[1] = hidden_states_list[1][start_idx_list[1]:end_idx_list[1]] 
@@ -561,7 +480,8 @@ class DeepseekV2SplitBatchModel(nn.Module):
                 residual=residual_list[1],
                 eaas_client=eaas_client,
                 layer_id=len(self.layers) - 1,
-                topk_ids=topk_ids_list[1]
+                topk_ids=topk_ids_list[1],
+                topk_weights=topk_weights_list[1]
             )
         torch.cuda.synchronize()
         
@@ -588,199 +508,3 @@ class DeepseekV2SplitBatchModel(nn.Module):
                 [residual_0, residual_1], \
                 [positions_0, positions_1], \
                 [forward_batch.sub_batch_0, forward_batch.sub_batch_1]
-
-
-class DeepseekV2SplitBatchForCausalLM(nn.Module):
-
-    def __init__(
-        self,
-        config: PretrainedConfig,
-        quant_config: Optional[QuantizationConfig] = None,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.quant_config = quant_config
-        self.model = DeepseekV2SplitBatchModel(config, quant_config)
-        if global_server_args_dict["enable_dp_attention"]:
-            self.lm_head = ReplicatedLinear(
-                config.hidden_size,
-                config.vocab_size,
-                bias=False,
-            )
-            self.logits_processor = LogitsProcessor(config, skip_all_gather=True)
-        else:
-            self.lm_head = ParallelLMHead(
-                config.vocab_size, config.hidden_size, quant_config=quant_config
-            )
-            self.logits_processor = LogitsProcessor(config)
-
-    @torch.no_grad()
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        forward_batch: ForwardBatch,
-        eaas_client: Optional[EaasMockClient] = None,
-        stream_a: Optional[torch.cuda.Stream] = None,
-        stream_b: Optional[torch.cuda.Stream] = None,
-    ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions, forward_batch, eaas_client, stream_a, stream_b)
-        return self.logits_processor(
-            input_ids, hidden_states, self.lm_head, forward_batch
-        )
-
-
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        stacked_params_mapping = [
-            # (param_name, shard_name, shard_id)
-            ("gate_up_proj", "gate_proj", 0),
-            ("gate_up_proj", "up_proj", 1),
-        ]
-
-        # Params for weights, fp8 weight scales, fp8 activation scales
-        # (param_name, weight_name, expert_id, shard_id)
-        MoEImpl = EPMoE if global_server_args_dict["enable_ep_moe"] else FusedMoE
-        expert_params_mapping = MoEImpl.make_expert_params_mapping(
-            ckpt_gate_proj_name="gate_proj",
-            ckpt_down_proj_name="down_proj",
-            ckpt_up_proj_name="up_proj",
-            num_experts=self.config.n_routed_experts,
-        )
-
-        params_dict = dict(self.named_parameters())
-        for name, loaded_weight in weights:
-            # TODO(HandH1998): Modify it when nextn is supported.
-            if hasattr(self.config, "num_nextn_predict_layers"):
-                num_nextn_layers = self.config.num_nextn_predict_layers
-                if num_nextn_layers > 0 and name.startswith("model.layers"):
-                    name_list = name.split(".")
-                    if (
-                        len(name_list) >= 3
-                        and int(name_list[2]) >= self.config.num_hidden_layers
-                    ):
-                        continue
-            if "rotary_emb.inv_freq" in name:
-                continue
-            for param_name, weight_name, shard_id in stacked_params_mapping:
-                # Skip non-stacked layers and experts (experts handled below).
-                if weight_name not in name:
-                    continue
-                # We have mlp.experts[0].gate_proj in the checkpoint.
-                # Since we handle the experts below in expert_params_mapping,
-                # we need to skip here BEFORE we update the name, otherwise
-                # name will be updated to mlp.experts[0].gate_up_proj, which
-                # will then be updated below in expert_params_mapping
-                # for mlp.experts[0].gate_gate_up_proj, which breaks load.
-                if ("mlp.experts." in name) and name not in params_dict:
-                    continue
-                name = name.replace(weight_name, param_name)
-                # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
-                param = params_dict[name]
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
-                break
-            else:
-                for mapping in expert_params_mapping:
-                    param_name, weight_name, expert_id, shard_id = mapping
-                    if weight_name not in name:
-                        continue
-                    name = name.replace(weight_name, param_name)
-                    param = params_dict[name]
-                    weight_loader = param.weight_loader
-                    weight_loader(
-                        param,
-                        loaded_weight,
-                        name,
-                        shard_id=shard_id,
-                        expert_id=expert_id,
-                    )
-                    break
-                else:
-                    # Skip loading extra bias for GPTQ models.
-                    if name.endswith(".bias") and name not in params_dict:
-                        continue
-
-                    param = params_dict[name]
-                    weight_loader = getattr(
-                        param, "weight_loader", default_weight_loader
-                    )
-                    weight_loader(param, loaded_weight)
-
-        if not global_server_args_dict["disable_mla"]:
-            for layer_id in range(self.config.num_hidden_layers):
-                self_attn = self.model.layers[layer_id].self_attn
-                if hasattr(self_attn.kv_b_proj, "qweight"):
-                    # AWQ compatible
-                    w = ops.awq_dequantize(
-                        self_attn.kv_b_proj.qweight,
-                        self_attn.kv_b_proj.scales,
-                        self_attn.kv_b_proj.qzeros,
-                        0,
-                        0,
-                        0,
-                    ).T
-                else:
-                    w = self_attn.kv_b_proj.weight
-                # NOTE(HandH1998): Since `bmm_fp8` only supports per-tensor scale, we have to requantize `self_attn.kv_b_proj`.
-                # This may affect the accuracy of fp8 model.
-                if hasattr(self.quant_config, "weight_block_size") and w.dtype in (
-                    torch.float8_e4m3fn,
-                    torch.float8_e4m3fnuz,
-                ):
-                    weight_block_size = self.quant_config.weight_block_size
-                    if weight_block_size is not None:
-                        assert hasattr(self_attn.kv_b_proj, "weight_scale_inv")
-                        if is_hip_:
-                            weight, weight_scale, _ = normalize_e4m3fn_to_e4m3fnuz(
-                                weight=w,
-                                weight_scale=self_attn.kv_b_proj.weight_scale_inv,
-                                input_scale=None,
-                            )
-                        else:
-                            weight = w
-                            weight_scale = self_attn.kv_b_proj.weight_scale_inv
-
-                        w, scale = block_quant_to_tensor_quant(
-                            weight, weight_scale, weight_block_size
-                        )
-                        self_attn.w_scale = scale
-                if (
-                    hasattr(self.quant_config, "weight_block_size")
-                    and w.dtype == torch.int8
-                ):
-                    weight_block_size = self.quant_config.weight_block_size
-                    if weight_block_size is not None:
-                        assert hasattr(self_attn.kv_b_proj, "weight_scale_inv")
-                        weight = w
-                        weight_scale = self_attn.kv_b_proj.weight_scale_inv
-                        w = int8_block_dequant(
-                            weight, weight_scale, weight_block_size
-                        ).to(torch.bfloat16)
-                w_kc, w_vc = w.unflatten(
-                    0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
-                ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
-                self_attn.w_kc = w_kc.transpose(1, 2).contiguous().transpose(1, 2)
-                self_attn.w_vc = w_vc.contiguous().transpose(1, 2)
-                if (
-                    hasattr(self_attn.kv_b_proj, "weight_scale")
-                    and self_attn.w_scale is None
-                ):
-                    self_attn.w_scale = self_attn.kv_b_proj.weight_scale
-                    if is_hip_:
-                        self_attn.w_scale *= 2.0
-
-    def get_embed_and_head(self):
-        return self.model.embed_tokens.weight, self.lm_head.weight
-
-    def set_embed_and_head(self, embed, head):
-        del self.model.embed_tokens.weight
-        del self.lm_head.weight
-        self.model.embed_tokens.weight = embed
-        self.lm_head.weight = head
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-
-EntryClass = [DeepseekV2SplitBatchForCausalLM]

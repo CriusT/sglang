@@ -178,6 +178,10 @@ class ServerArgs:
     debug_tensor_dump_input_file: Optional[str] = None
     debug_tensor_dump_inject: bool = False
 
+    # Eaas
+    enable_eaas: Optional[bool] = False
+    enable_eaas_split_batch: Optional[bool] = False
+
     def __post_init__(self):
         # Set missing default values
         if self.tokenizer_path is None:
@@ -1000,6 +1004,21 @@ class ServerArgs:
             default=ServerArgs.debug_tensor_dump_inject,
             help="Inject the outputs from jax as the input of every layer.",
         )
+
+        parser.add_argument(
+            "--enable-eaas",
+            action="store_true",
+            default=ServerArgs.enable_eaas,
+            help="Enable Eaas",
+        )   
+        parser.add_argument(
+            "--enable-eaas-split-batch",
+            action="store_true",
+            default=ServerArgs.enable_eaas_split_batch,
+            help="Enable Eaas split batch",
+        )
+        
+        
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):

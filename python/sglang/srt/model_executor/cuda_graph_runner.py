@@ -373,7 +373,8 @@ class CudaGraphRunner:
 
         stream_a = None
         stream_b = None
-        if self.model_runner.is_split_batch and bs > 1 and forward_batch.forward_mode.is_decode():
+        if self.model_runner.enable_eaas_split_batch and bs > 1 and forward_batch.forward_mode.is_decode():
+            assert self.model_runner.enable_eaas
             forward_batch.init_sub_batches(self.model_runner)
             stream_a = torch.cuda.Stream()
             stream_b = torch.cuda.Stream()
