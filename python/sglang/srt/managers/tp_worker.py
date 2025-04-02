@@ -71,6 +71,7 @@ class TpModelWorker:
             dtype=server_args.dtype,
             quantization=server_args.quantization,
         )
+        self.model_config.enable_eaas = server_args.enable_eaas
 
         self.model_runner = ModelRunner(
             model_config=self.model_config,

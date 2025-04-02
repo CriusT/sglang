@@ -301,7 +301,7 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
         return hidden_states, residual
 
     def _save_results(self, hidden_states):
-        save_path = "/gpfs/users/tianboyu/cpu001/EaaS/log/layer_3_results_eaas.pt"
+        save_path = "/gpfs/users/tianboyu/cpu001/EaaS/log/layer_3_results_eaas" + str(self.tp_rank) + ".pt"
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(save_path), exist_ok=True)

@@ -35,10 +35,8 @@ def get_model_architecture(model_config: ModelConfig) -> Tuple[Type[nn.Module], 
         architectures = ["QuantMixtralForCausalLM"]
 
     # Special handling for Eaas DeepSeek models.
-    if (
-        model_config.enable_eaas
-        and "DeepseekV2ForCausalLM" in architectures
-    ):
+    if model_config.enable_eaas and ("DeepseekV2ForCausalLM" in architectures
+        or "DeepseekV3ForCausalLM" in architectures):
         architectures = ["DeepseekV2EaasForCausalLM"]
 
 

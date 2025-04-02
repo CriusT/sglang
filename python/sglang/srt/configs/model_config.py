@@ -111,6 +111,7 @@ class ModelConfig:
             "DeepseekV2ForCausalLM" in self.hf_config.architectures
             or "DeepseekV3ForCausalLM" in self.hf_config.architectures
             or "DeepseekV3ForCausalLMNextN" in self.hf_config.architectures
+            or "DeepseekV2EaasForCausalLM" in self.hf_config.architectures
         ):
             self.head_dim = 256
             self.attention_arch = AttentionArch.MLA
@@ -164,6 +165,9 @@ class ModelConfig:
         # Eaas
         # FIXME(boyu): This is a temporary hack.
         self.enable_eaas = False
+
+        self.num_loaded_layers = self.num_hidden_layers
+        
 
     # adapted from https://github.com/vllm-project/vllm/blob/main/vllm/config.py#L289
     def get_total_num_kv_heads(self) -> int:

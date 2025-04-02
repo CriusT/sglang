@@ -1012,6 +1012,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.quant_config = quant_config
+        
         self.model = DeepseekV2Model(config, quant_config)
         if global_server_args_dict["enable_dp_attention"]:
             self.lm_head = ReplicatedLinear(

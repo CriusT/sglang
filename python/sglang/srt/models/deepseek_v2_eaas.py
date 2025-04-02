@@ -35,6 +35,7 @@ from sglang.srt.models.deepseek_v2_eaas_single_batch import (
 from sglang.srt.models.deepseek_v2_eaas_split_batch import (
     DeepseekV2EaasSplitBatchModel,
 )
+from sglang.srt.models.deepseek_v2 import DeepseekV2ForCausalLM
 
 from sglang.srt.eaas.eaas_mock_client import EaasMockClient
 
@@ -54,7 +55,7 @@ class DeepseekV2EaasForCausalLM(nn.Module):
         self.config = config
         self.quant_config = quant_config
     
-        print(global_server_args_dict)
+        # print(global_server_args_dict)
 
         self.enable_split_batch = global_server_args_dict["enable_eaas_split_batch"]
 
@@ -95,8 +96,7 @@ class DeepseekV2EaasForCausalLM(nn.Module):
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
-
-
+    
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
@@ -144,6 +144,8 @@ class DeepseekV2EaasForCausalLM(nn.Module):
                 # Skip loading extra bias for GPTQ models.
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                if name.endswith("_bias") and name not in params_dict:
+                    continue
                 param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
@@ -168,7 +170,9 @@ class DeepseekV2EaasForCausalLM(nn.Module):
                     # Skip loading extra bias for GPTQ models.
                     if name.endswith(".bias") and name not in params_dict:
                         continue
-
+                    if name.endswith("_bias") and name not in params_dict:
+                        continue
+                    # print(f"params dict keys: {params_dict.keys()}")
                     param = params_dict[name]
                     weight_loader = getattr(
                         param, "weight_loader", default_weight_loader
@@ -237,17 +241,13 @@ class DeepseekV2EaasForCausalLM(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if is_hip_:
                         self_attn.w_scale *= 2.0
+    
+    
+    
 
-    def get_embed_and_head(self):
-        return self.model.embed_tokens.weight, self.lm_head.weight
-
-    def set_embed_and_head(self, embed, head):
-        del self.model.embed_tokens.weight
-        del self.lm_head.weight
-        self.model.embed_tokens.weight = embed
-        self.lm_head.weight = head
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+# DeepseekV2EaasForCausalLM.load_weights = DeepseekV2ForCausalLM.load_weights
+DeepseekV2EaasForCausalLM.get_embed_and_head = DeepseekV2ForCausalLM.get_embed_and_head
+DeepseekV2EaasForCausalLM.set_embed_and_head = DeepseekV2ForCausalLM.set_embed_and_head
 
 
 EntryClass = [DeepseekV2EaasForCausalLM]

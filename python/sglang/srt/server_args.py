@@ -1008,19 +1008,19 @@ class ServerArgs:
 
         parser.add_argument(
             "--enable-eaas",
-            action="store_true",
+            type=bool,
             default=ServerArgs.enable_eaas,
             help="Enable Eaas",
         )   
         parser.add_argument(
             "--enable-eaas-split-batch",
-            action="store_true",
+            type=bool,
             default=ServerArgs.enable_eaas_split_batch,
             help="Enable Eaas split batch",
         )
         parser.add_argument(
             "--debug-activate-eaas",
-            action="store_true",
+            type=bool,
             default=ServerArgs.debug_activate_eaas,
             help="Using our model but control whether to use EaaS",
         )

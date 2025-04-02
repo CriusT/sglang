@@ -213,17 +213,15 @@ class ModelRunner:
         self.enable_eaas = server_args.enable_eaas
         self.enable_eaas_split_batch = server_args.enable_eaas_split_batch
         if server_args.enable_eaas:
-            self.eaas_server_manager = EaasServerManager()
             self.eaas_client = FabricClientManager()
+            # self.eaas_server_manager = EaasServerManager()
             # self.eaas_client = EaasMockClient(self.eaas_server_manager)
-
             json_path = "/gpfs/users/liuziming/EaaS_Server/info/tensor_server_address.json"
-            device = "mlx5_03"
-            client_id = 17
-            cuda_device = 3
+            # json_path = "/gpfs/users/tianboyu/cpu001/EaaS/EaaS_Server/info/tensor_server_address.json"
+            device = "mlx5_0" + str(self.gpu_id)
             if server_args.debug_activate_eaas:
                 self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, 
-                                                                    client_id, cuda_device)
+                                                                     self.tp_rank, self.gpu_id)
 
         set_cpu_offload_max_bytes(int(server_args.cpu_offload_gb * 1024**3))
 
@@ -368,6 +366,10 @@ class ModelRunner:
         if self.server_args.load_format == "gguf":
             monkey_patch_vllm_gguf_config()
 
+        # original_num_layers = self.model_config.num_hidden_layers
+        # self.model_config.num_hidden_layers = 3
+        # self.model_config.num_loaded_layers = 3
+
         # Load the model
         # Remove monkey_patch when linear.py quant remove dependencies with vllm
         monkey_patch_vllm_parallel_state()
@@ -378,6 +380,8 @@ class ModelRunner:
                 device_config=DeviceConfig(self.device),
             )
         monkey_patch_vllm_parallel_state(reverse=True)
+
+        # self.model_config.num_hidden_layers = original_num_layers
 
         if self.server_args.kv_cache_dtype == "fp8_e4m3":
             if self.server_args.quantization_param_path is not None:

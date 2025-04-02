@@ -1,7 +1,6 @@
 """
 # Usage (correctness test):
-python /gpfs/users/tianboyu/cpu001/EaaS/sglang/python/sglang/bench_split_batch.py --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-R1 --correct --tp-size 1 --disable-cuda-graph
-
+python /gpfs/users/tianboyu/cpu001/EaaS/sglang/python/sglang/bench_split_batch.py --model-path /gpfs/models/huggingface.co/deepseek-ai/DeepSeek-V2-Lite --correct --tp-size 14 --disable-cuda-graph
 #
 """
 
@@ -500,10 +499,10 @@ if __name__ == "__main__":
     BenchArgs.add_cli_args(parser)
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
-    server_args.trust_remote_code = True
-    server_args.enable_eaas = True
-    server_args.enable_eaas_split_batch = False
-    server_args.debug_activate_eaas = True
+    # server_args.trust_remote_code = True
+    # server_args.enable_eaas = True
+    # server_args.enable_eaas_split_batch = False
+    # server_args.debug_activate_eaas = True
     bench_args = BenchArgs.from_cli_args(args)
 
     logging.basicConfig(

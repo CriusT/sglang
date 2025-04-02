@@ -217,7 +217,7 @@ class ForwardBatch:
         batch: ModelWorkerBatch,
         model_runner: ModelRunner,
     ):
-        logger.info("Init new forward batch")
+        # logger.info("Init new forward batch")
         device = model_runner.device
         extend_input_logprob_token_ids_gpu = None
         if batch.extend_input_logprob_token_ids is not None:
