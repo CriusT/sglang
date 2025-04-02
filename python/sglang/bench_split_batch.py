@@ -499,10 +499,6 @@ if __name__ == "__main__":
     BenchArgs.add_cli_args(parser)
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
-    # server_args.trust_remote_code = True
-    # server_args.enable_eaas = True
-    # server_args.enable_eaas_split_batch = False
-    # server_args.debug_activate_eaas = True
     bench_args = BenchArgs.from_cli_args(args)
 
     logging.basicConfig(

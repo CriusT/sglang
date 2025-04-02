@@ -177,7 +177,7 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
             cur_result = server_results[i]
 
             for j, row_id in enumerate(row_ids):
-                row_results[row_id] += cur_result[j]
+                row_results[row_id] += cur_result[j].squeeze(0)
 
         return row_results        
         
@@ -373,7 +373,9 @@ class DeepseekV2EaasSingleBatchModel(nn.Module):
                 positions, hidden_states, forward_batch, residual, 
                 eaas_client=eaas_client, layer_id=i
             )
+        logger.info("forward layer finished in DeepseekV2EaasSingleBatchModel, hidden_states.shape: {}".format(hidden_states.shape))
         if not forward_batch.forward_mode.is_idle():
             hidden_states, _ = self.norm(hidden_states, residual)
+        logger.info("norm finished in DeepseekV2EaasSingleBatchModel, hidden_states.shape: {}".format(hidden_states.shape))
         return hidden_states
 

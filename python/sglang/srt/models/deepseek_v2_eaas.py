@@ -93,7 +93,8 @@ class DeepseekV2EaasForCausalLM(nn.Module):
         else:
             logger.info(f"Forward single batch in DeepseekV2EaasForCausalLM ")
             hidden_states = self.model(input_ids, positions, forward_batch, eaas_client)
-            
+        
+        logger.info("logits processor in DeepseekV2EaasForCausalLM")
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
