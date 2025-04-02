@@ -205,6 +205,8 @@ class ModelRunner:
                 "enable_eaas": server_args.enable_eaas,
                 "enable_eaas_split_batch": server_args.enable_eaas_split_batch,
                 "debug_activate_eaas": server_args.debug_activate_eaas,
+                "eaas_dump_middle_result": server_args.eaas_dump_middle_result,
+                "eaas_dump_middle_result_path": server_args.eaas_dump_middle_result_path,
             }
         )
 
@@ -216,7 +218,8 @@ class ModelRunner:
             self.eaas_client = FabricClientManager()
             # self.eaas_server_manager = EaasServerManager()
             # self.eaas_client = EaasMockClient(self.eaas_server_manager)
-            json_path = "/gpfs/users/liuziming/EaaS_Server/info/tensor_server_address.json"
+            json_path = server_args.eaas_server_json_path
+            # json_path = "/gpfs/users/liuziming/EaaS_Server/info/tensor_server_address.json"
             # json_path = "/gpfs/users/tianboyu/cpu001/EaaS/EaaS_Server/info/tensor_server_address.json"
             device = "mlx5_0" + str(self.gpu_id)
             if server_args.debug_activate_eaas:
@@ -882,10 +885,13 @@ class ModelRunner:
             return self.cuda_graph_runner.replay(forward_batch)
 
         if forward_batch.forward_mode.is_decode():
+            logger.info("Forward decode")
             return self.forward_decode(forward_batch)
         elif forward_batch.forward_mode.is_extend():
+            logger.info("Forward extend")
             return self.forward_extend(forward_batch)
         elif forward_batch.forward_mode.is_idle():
+            logger.info("Forward idle")
             return self.forward_idle(forward_batch)
         else:
             raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")

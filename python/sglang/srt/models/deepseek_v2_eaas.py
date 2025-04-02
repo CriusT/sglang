@@ -88,11 +88,12 @@ class DeepseekV2EaasForCausalLM(nn.Module):
         stream_b: Optional[torch.cuda.Stream] = None,
     ) -> torch.Tensor:
         if self.enable_split_batch:
-            logger.info(f"Forward split batch")
+            logger.info(f"Forward split batch in DeepseekV2EaasForCausalLM")
             hidden_states = self.model(input_ids, positions, forward_batch, eaas_client, stream_a, stream_b)
         else:
-            logger.info(f"Forward single batch")
+            logger.info(f"Forward single batch in DeepseekV2EaasForCausalLM ")
             hidden_states = self.model(input_ids, positions, forward_batch, eaas_client)
+            
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )

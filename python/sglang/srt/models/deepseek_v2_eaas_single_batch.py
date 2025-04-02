@@ -137,8 +137,8 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
                                           server_results=server_results, 
                                           server_address_row_ids_dict=server_address_row_ids_dict)
         
-        return final_results
-        # return hidden_states
+        # return final_results
+        return hidden_states
 
     def forward(
         self,
@@ -146,11 +146,19 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         eaas_client: Optional[EaasMockClient] = None,
         layer_id: Optional[int] = None,
     ) -> torch.Tensor:
+        logger.info("forward in DeepseekV2EaasMoE")
         if not global_server_args_dict["debug_activate_eaas"]:
+            logger.info("Not activate EaaS, fall back to DeepseekV2MoE")
             return super().forward(hidden_states)
         if eaas_client is None: # non-decode mode
+            logger.info("Non-decode mode, fall back to DeepseekV2MoE")
             return super().forward(hidden_states)
+        
+        logger.info("EaaS mode MoE forward")
+        logger.info(f"layer_id: {layer_id}, hidden_states.shape: {hidden_states.shape}")
         topk_weights, topk_ids = self.forward_gate(hidden_states)
+
+        logger.info(f"topk_weights.shape: {topk_weights.shape}, topk_ids.shape: {topk_ids.shape}, hidden_states.shape: {hidden_states.shape}")
         return self.forward_experts(hidden_states, eaas_client, layer_id, topk_ids, topk_weights)
     
     def merge_results(
@@ -260,6 +268,8 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
         layer_id: Optional[int] = None,
     ) -> torch.Tensor:
         # Self Attention
+        logger.info("forward of layer {} in DeepseekV2EaasSingleBatchDecoderLayer".format(layer_id))
+
         if not forward_batch.forward_mode.is_idle():
             if residual is None:
                 residual = hidden_states
@@ -281,27 +291,30 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
             hidden_states, start_idx, end_idx = all_gather(
                 hidden_states, forward_batch, self.tp_rank, self.tp_size, self.tp_group
             )
-            if isinstance(self.mlp, DeepseekV2EaasMoE) and \
-                forward_batch.forward_mode.is_decode():
+            if isinstance(self.mlp, DeepseekV2EaasMoE) and forward_batch.forward_mode.is_decode():
                 hidden_states = self.mlp(hidden_states, eaas_client, layer_id)
             else:
                 hidden_states = self.mlp(hidden_states)
             hidden_states = hidden_states[start_idx:end_idx]
         else:
-            if isinstance(self.mlp, DeepseekV2EaasMoE) and \
-                forward_batch.forward_mode.is_decode():
+            if isinstance(self.mlp, DeepseekV2EaasMoE) and forward_batch.forward_mode.is_decode():
                 hidden_states = self.mlp(hidden_states, eaas_client, layer_id)
             else:
                 hidden_states = self.mlp(hidden_states)
 
-        if forward_batch.forward_mode.is_decode():
+        if forward_batch.forward_mode.is_decode() and global_server_args_dict["eaas_dump_middle_result"]:
             if layer_id == 3:
                 self._save_results(hidden_states)
                 sys.exit()
         return hidden_states, residual
 
     def _save_results(self, hidden_states):
-        save_path = "/gpfs/users/tianboyu/cpu001/EaaS/log/layer_3_results_eaas" + str(self.tp_rank) + ".pt"
+        if self.enable_dp_attention:
+            save_path = global_server_args_dict["eaas_dump_middle_result_path"] + \
+              "/layer_3_results_eaas" + str(self.tp_rank) + ".pt"
+        else:
+            save_path = global_server_args_dict["eaas_dump_middle_result_path"] + \
+              "/layer_3_results_eaas.pt"
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -353,6 +366,7 @@ class DeepseekV2EaasSingleBatchModel(nn.Module):
 
         hidden_states = self.embed_tokens(input_ids)
         residual = None
+        logger.info("forward in DeepseekV2EaasSingleBatchModel, input_ids.shape: {}, hidden_states.shape: {}".format(input_ids.shape, hidden_states.shape))
         for i in range(len(self.layers)):
             layer = self.layers[i]
             hidden_states, residual = layer(

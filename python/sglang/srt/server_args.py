@@ -179,9 +179,12 @@ class ServerArgs:
     debug_tensor_dump_inject: bool = False
 
     # Eaas
-    enable_eaas: Optional[bool] = False
-    enable_eaas_split_batch: Optional[bool] = False
-    debug_activate_eaas: Optional[bool] = False
+    enable_eaas: Optional[bool] = False # Use DeepseekV2EaasForCausalLM
+    enable_eaas_split_batch: Optional[bool] = False # Enable split batch for DeepseekV2EaasForCausalLM
+    debug_activate_eaas: Optional[bool] = False # Actually activate remote experts
+    eaas_server_json_path: Optional[str] = None # The path of the server json file
+    eaas_dump_middle_result: Optional[bool] = False # Dump middle results (layer_id == 3) for DeepseekV2EaasForCausalLM
+    eaas_dump_middle_result_path: Optional[str] = None # The path to dump the middle results
 
     def __post_init__(self):
         # Set missing default values
@@ -1008,23 +1011,40 @@ class ServerArgs:
 
         parser.add_argument(
             "--enable-eaas",
-            type=bool,
+            action="store_true",
             default=ServerArgs.enable_eaas,
             help="Enable Eaas",
         )   
         parser.add_argument(
             "--enable-eaas-split-batch",
-            type=bool,
+            action="store_true",
             default=ServerArgs.enable_eaas_split_batch,
             help="Enable Eaas split batch",
         )
         parser.add_argument(
             "--debug-activate-eaas",
-            type=bool,
+            action="store_true",
             default=ServerArgs.debug_activate_eaas,
             help="Using our model but control whether to use EaaS",
         )
-        
+        parser.add_argument(
+            "--eaas-server-json-path",
+            type=str,
+            default=ServerArgs.eaas_server_json_path,
+            help="The path of the server json file",
+        )
+        parser.add_argument(
+            "--eaas-dump-middle-result",
+            action="store_true",
+            default=ServerArgs.eaas_dump_middle_result,
+            help="Dump middle results (layer_id == 3) for DeepseekV2EaasForCausalLM",
+        )
+        parser.add_argument(
+            "--eaas-dump-middle-result-path",
+            type=str,
+            default=ServerArgs.eaas_dump_middle_result_path,
+            help="The path to dump the middle results",
+        )
         
 
     @classmethod
