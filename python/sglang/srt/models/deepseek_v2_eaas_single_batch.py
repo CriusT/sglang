@@ -93,6 +93,7 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         for i in range(hidden_states.shape[0]):
             row_topk_ids = topk_ids[i:i+1]
             topk_ids_list = row_topk_ids.tolist()[0]
+            topk_ids_list.append(-1)
 
             server_addresses = eaas_client.mock_map_expert_to_server(layer_id, topk_ids_list)
 
