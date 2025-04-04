@@ -180,6 +180,7 @@ class ServerArgs:
 
     # Eaas
     enable_eaas: Optional[bool] = False # Use DeepseekV2EaasForCausalLM
+    eaas_use_mock_client: Optional[bool] = False # Use mock client for DeepseekV2EaasForCausalLM
     enable_eaas_split_batch: Optional[bool] = False # Enable split batch for DeepseekV2EaasForCausalLM
     debug_activate_eaas: Optional[bool] = False # Actually activate remote experts
     eaas_server_json_path: Optional[str] = None # The path of the server json file
@@ -1044,6 +1045,12 @@ class ServerArgs:
             type=str,
             default=ServerArgs.eaas_dump_middle_result_path,
             help="The path to dump the middle results",
+        )
+        parser.add_argument(
+            "--eaas-use-mock-client", 
+            action="store_true",
+            default=ServerArgs.eaas_use_mock_client,
+            help="Use mock client for EaaS",
         )
         
 

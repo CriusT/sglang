@@ -106,19 +106,21 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         
         # For a expert id, we replicate one request. 
         # Therefore, the number of requests is the same as the number of experts.
-        # That is to say, request_tensor.shape[0] == expert_ids
-        # Each server, corresponds to multiple pairs of (request_tensor_row, expert_ids)
-        # The number of pairs is the same as the number of rows in request_tensor.
+        # i.e., request_tensor.shape[0] == len(expert_ids)
+        # Each server corresponds to multiple pairs of (request_tensor_row, expert_id)
+        # (tensor-0, expert id-0), 
+        # (tensor-0, expert id-1), 
+        # ...
+        # (tensor-1, expert id-4), 
+        # (tensor-1, expert id-2), 
+        # ...
         for server_address in list(server_address_row_ids_dict.keys()):
             request_tensor = hidden_states[server_address_row_ids_dict[server_address]]
             request_tensor = request_tensor.reshape(request_tensor.shape[0], 1, request_tensor.shape[1])
             expert_ids = server_address_expert_ids_dict[server_address]
-            # debug
-            # logger.info(f"type(request_tensor): {type(request_tensor)}, type(server_address): {type(server_address)}, type(expert_ids): {type(expert_ids)}") 
-            
             success = eaas_client.moe_request_to_servers(
                 server_indices=[server_address],
-                tensor=request_tensor.to(torch.float16),  # TODO(boyu): need server side modification
+                tensor=request_tensor.to(torch.float16),  # TODO(boyu & ziming): need server side modification
                 seed=0,
                 layer=layer_id,
                 active_experts=expert_ids,
@@ -130,15 +132,16 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         # Get results from all servers
         # Here, I assume no merging happens on the server side
         # Therefore, for each server, the number of results is the same as the number of rows in request_tensor.
-
         server_results = eaas_client.wait_for_tensor_result(server_address_row_ids_dict.keys())
         final_results = self.merge_results(num_rows=hidden_states.shape[0], 
                                           hidden_size=hidden_states.shape[1],
                                           server_results=server_results, 
                                           server_address_row_ids_dict=server_address_row_ids_dict)
         
-        # return final_results
-        return hidden_states
+        assert final_results.shape == hidden_states.shape, \
+            f"unmatched shape: final_results.shape: {final_results.shape}, \
+                hidden_states.shape: {hidden_states.shape}"
+        return final_results
 
     def forward(
         self,
@@ -168,14 +171,11 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         server_results: List[torch.Tensor], 
         server_address_row_ids_dict: Dict[str, List[int]], 
     ) -> torch.Tensor:
-        # Each result corresponds to results from one server
-        # assert len(server_results) == len(server_address_row_ids_dict)
-
+        
         row_results = torch.zeros(num_rows, hidden_size, device=server_results[0].device, dtype=server_results[0].dtype)
         for i, server_address in enumerate(server_address_row_ids_dict.keys()):
             row_ids = server_address_row_ids_dict[server_address]
             cur_result = server_results[i]
-
             for j, row_id in enumerate(row_ids):
                 row_results[row_id] += cur_result[j].squeeze(0)
 

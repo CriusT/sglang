@@ -215,7 +215,12 @@ class ModelRunner:
         self.enable_eaas = server_args.enable_eaas
         self.enable_eaas_split_batch = server_args.enable_eaas_split_batch
         if server_args.enable_eaas:
-            self.eaas_client = FabricClientManager()
+            if server_args.eaas_use_mock_client:
+                logger.info(" -- Use mock client for EaaS --")
+                self.eaas_client = EaasMockClient()
+            else:
+                logger.info(" -- Use fabric client for EaaS --")
+                self.eaas_client = FabricClientManager()
             # self.eaas_server_manager = EaasServerManager()
             # self.eaas_client = EaasMockClient(self.eaas_server_manager)
             json_path = server_args.eaas_server_json_path
@@ -223,8 +228,7 @@ class ModelRunner:
             # json_path = "/gpfs/users/tianboyu/cpu001/EaaS/EaaS_Server/info/tensor_server_address.json"
             device = "mlx5_0" + str(self.gpu_id)
             # if server_args.debug_activate_eaas:
-            self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, 
-                                                                    self.tp_rank, self.gpu_id)
+            self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, self.tp_rank, self.gpu_id)
 
         set_cpu_offload_max_bytes(int(server_args.cpu_offload_gb * 1024**3))
 
