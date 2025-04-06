@@ -228,7 +228,7 @@ class ModelRunner:
             # json_path = "/gpfs/users/tianboyu/cpu001/EaaS/EaaS_Server/info/tensor_server_address.json"
             device = "mlx5_0" + str(self.gpu_id)
             # if server_args.debug_activate_eaas:
-            self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, self.tp_rank, self.gpu_id)
+            self.eaas_client.connect_to_tensor_servers_from_json(json_path, device, self.tp_rank + 1000, self.gpu_id)
 
         set_cpu_offload_max_bytes(int(server_args.cpu_offload_gb * 1024**3))
 

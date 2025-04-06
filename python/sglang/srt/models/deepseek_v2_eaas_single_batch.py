@@ -12,6 +12,7 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     get_tp_group,
+    tensor_model_parallel_all_reduce,
 )
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
@@ -56,9 +57,6 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        num_tokens, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)
-
         router_logits = self.gate(hidden_states)
 
         from sglang.srt.layers.moe.topk import select_experts
@@ -72,6 +70,10 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
             num_expert_group=self.num_expert_group,
             correction_bias=self.correction_bias
         )
+        neg_ones = torch.full((topk_ids.shape[0], 1), -1, device=topk_ids.device, dtype=topk_ids.dtype)
+        ones = torch.full((topk_ids.shape[0], 1), 1, device=topk_ids.device, dtype=topk_ids.dtype)
+        topk_ids = torch.cat([topk_ids, neg_ones], dim=1)
+        topk_weights = torch.cat([topk_weights, ones], dim=1)
 
         return topk_weights, topk_ids
     
@@ -83,28 +85,22 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         topk_ids: torch.Tensor,
         topk_weights: torch.Tensor,
     ) -> torch.Tensor:        
+        # return hidden_states
         
         # Dict[server_address, List[row_ids]]
         server_address_row_ids_dict = {}
-
         # Dict[server_address, List[expert_ids]]
         server_address_expert_ids_dict = {}
-
         for i in range(hidden_states.shape[0]):
-            row_topk_ids = topk_ids[i:i+1]
-            topk_ids_list = row_topk_ids.tolist()[0]
-            topk_ids_list.append(-1)
-
-            server_addresses = eaas_client.mock_map_expert_to_server(layer_id, topk_ids_list)
-
+            row_topk_ids = topk_ids[i]
+            server_addresses = eaas_client.mock_map_expert_to_server(layer_id, row_topk_ids)
             for j, server_address in enumerate(server_addresses):
                 if server_address not in server_address_row_ids_dict:
                     server_address_row_ids_dict[server_address] = []
                 if server_address not in server_address_expert_ids_dict:
                     server_address_expert_ids_dict[server_address] = []
                 server_address_row_ids_dict[server_address].append(i)
-                server_address_expert_ids_dict[server_address].append(topk_ids_list[j])
-        
+                server_address_expert_ids_dict[server_address].append(row_topk_ids[j])
         # For a expert id, we replicate one request. 
         # Therefore, the number of requests is the same as the number of experts.
         # i.e., request_tensor.shape[0] == len(expert_ids)
@@ -116,8 +112,12 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         # (tensor-1, expert id-2), 
         # ...
         for server_address in list(server_address_row_ids_dict.keys()):
-            request_tensor = hidden_states[server_address_row_ids_dict[server_address]]
-            request_tensor = request_tensor.reshape(request_tensor.shape[0], 1, request_tensor.shape[1])
+            row_indices = torch.tensor(server_address_row_ids_dict[server_address], 
+                                       device=hidden_states.device)
+            request_tensor = hidden_states.index_select(0, row_indices)
+            request_tensor = request_tensor.unsqueeze(1)
+            # request_tensor = hidden_states[server_address_row_ids_dict[server_address]]
+            # request_tensor = request_tensor.reshape(request_tensor.shape[0], 1, request_tensor.shape[1])
             expert_ids = server_address_expert_ids_dict[server_address]
             success = eaas_client.moe_request_to_servers(
                 server_indices=[server_address],
@@ -129,7 +129,6 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
             if not success:
                 logger.error(f"Error in sending request to server {server_address}")
                 sys.exit()
-
         # Get results from all servers
         # Here, I assume no merging happens on the server side
         # Therefore, for each server, the number of results is the same as the number of rows in request_tensor.
@@ -137,7 +136,9 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         final_results = self.merge_results(num_rows=hidden_states.shape[0], 
                                           hidden_size=hidden_states.shape[1],
                                           server_results=server_results, 
-                                          server_address_row_ids_dict=server_address_row_ids_dict)
+                                          server_address_row_ids_dict=server_address_row_ids_dict,
+                                          multiply_topk_weights=True,
+                                          topk_weights=topk_weights)
         
         assert final_results.shape == hidden_states.shape, \
             f"unmatched shape: final_results.shape: {final_results.shape}, \
@@ -150,20 +151,23 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         eaas_client: Optional[EaasMockClient] = None,
         layer_id: Optional[int] = None,
     ) -> torch.Tensor:
-        logger.info("forward in DeepseekV2EaasMoE")
         if not global_server_args_dict["debug_activate_eaas"]:
-            logger.info("Not activate EaaS, fall back to DeepseekV2MoE")
             return super().forward(hidden_states)
         if eaas_client is None: # non-decode mode
-            logger.info("Non-decode mode, fall back to DeepseekV2MoE")
             return super().forward(hidden_states)
         
-        logger.info("EaaS mode MoE forward")
-        logger.info(f"layer_id: {layer_id}, hidden_states.shape: {hidden_states.shape}")
+        num_tokens, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        
+        # return super().forward(hidden_states)
+        logger.info(f"EaaS mode MoE forward, layer_id: {layer_id}")
         topk_weights, topk_ids = self.forward_gate(hidden_states)
+        final_hidden_states = self.forward_experts(hidden_states, eaas_client, layer_id, topk_ids, topk_weights)
+    
+        if self.tp_size > 1:
+            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
 
-        logger.info(f"topk_weights.shape: {topk_weights.shape}, topk_ids.shape: {topk_ids.shape}, hidden_states.shape: {hidden_states.shape}")
-        return self.forward_experts(hidden_states, eaas_client, layer_id, topk_ids, topk_weights)
+        return final_hidden_states.view(num_tokens, hidden_dim)
     
     def merge_results(
         self, 
@@ -171,15 +175,32 @@ class DeepseekV2EaasMoE(DeepseekV2MoE):
         hidden_size: int,
         server_results: List[torch.Tensor], 
         server_address_row_ids_dict: Dict[str, List[int]], 
+        multiply_topk_weights: bool = False,
+        topk_weights: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        
         row_results = torch.zeros(num_rows, hidden_size, device=server_results[0].device, dtype=server_results[0].dtype)
-        for i, server_address in enumerate(server_address_row_ids_dict.keys()):
-            row_ids = server_address_row_ids_dict[server_address]
-            cur_result = server_results[i]
-            for j, row_id in enumerate(row_ids):
-                row_results[row_id] += cur_result[j].squeeze(0)
+        if multiply_topk_weights:
+            # only support one server
+            assert len(server_results) == 1
+            assert topk_weights is not None
+            cur_result = server_results[0]
+            num_activate_experts = topk_weights.shape[1] 
+            for i in range(num_rows):
+                cur_row_server_results = cur_result[i * num_activate_experts: (i + 1) * num_activate_experts]
+                cur_row_topk_weights = topk_weights[i]
+                # cur_row_topk_weights = torch.cat([cur_row_topk_weights, torch.tensor([1.0], device=cur_row_topk_weights.device, dtype=cur_row_topk_weights.dtype)])
+                squeezed_results = cur_row_server_results.squeeze(1)
+                # Reshape weights to [9, 1] for proper broadcasting
+                weights_for_broadcast = cur_row_topk_weights.view(-1, 1)
+                # Compute weighted sum
+                row_results[i] = torch.sum(squeezed_results * weights_for_broadcast, dim=0)
 
+        else:
+            for i, server_address in enumerate(server_address_row_ids_dict.keys()):
+                row_ids = server_address_row_ids_dict[server_address]
+                cur_result = server_results[i]
+                for j, row_id in enumerate(row_ids):
+                    row_results[row_id] += cur_result[j].squeeze(0)
         return row_results        
         
 
@@ -268,9 +289,8 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
         eaas_client: Optional[EaasMockClient] = None,
         layer_id: Optional[int] = None,
     ) -> torch.Tensor:
+        logger.info("forward of layer {} in DecoderLayer".format(layer_id))
         # Self Attention
-        logger.info("forward of layer {} in DeepseekV2EaasSingleBatchDecoderLayer".format(layer_id))
-
         if not forward_batch.forward_mode.is_idle():
             if residual is None:
                 residual = hidden_states
@@ -306,7 +326,9 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
         if forward_batch.forward_mode.is_decode() and global_server_args_dict["eaas_dump_middle_result"]:
             if layer_id == 3:
                 self._save_results(hidden_states)
+                logger.info("save results and exit")
                 sys.exit()
+        
         return hidden_states, residual
 
     def _save_results(self, hidden_states):
@@ -367,16 +389,13 @@ class DeepseekV2EaasSingleBatchModel(nn.Module):
 
         hidden_states = self.embed_tokens(input_ids)
         residual = None
-        logger.info("forward in DeepseekV2EaasSingleBatchModel, input_ids.shape: {}, hidden_states.shape: {}".format(input_ids.shape, hidden_states.shape))
         for i in range(len(self.layers)):
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions, hidden_states, forward_batch, residual, 
                 eaas_client=eaas_client, layer_id=i
             )
-        logger.info("forward layer finished in DeepseekV2EaasSingleBatchModel, hidden_states.shape: {}".format(hidden_states.shape))
         if not forward_batch.forward_mode.is_idle():
             hidden_states, _ = self.norm(hidden_states, residual)
-        logger.info("norm finished in DeepseekV2EaasSingleBatchModel, hidden_states.shape: {}".format(hidden_states.shape))
         return hidden_states
 
