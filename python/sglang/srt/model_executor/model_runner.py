@@ -207,6 +207,7 @@ class ModelRunner:
                 "debug_activate_eaas": server_args.debug_activate_eaas,
                 "eaas_dump_middle_result": server_args.eaas_dump_middle_result,
                 "eaas_dump_middle_result_path": server_args.eaas_dump_middle_result_path,
+                "eaas_max_layers": server_args.eaas_max_layers,
             }
         )
 

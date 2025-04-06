@@ -322,30 +322,8 @@ class DeepseekV2EaasSingleBatchDecoderLayer(nn.Module):
                 hidden_states = self.mlp(hidden_states, eaas_client, layer_id)
             else:
                 hidden_states = self.mlp(hidden_states)
-
-        if forward_batch.forward_mode.is_decode() and global_server_args_dict["eaas_dump_middle_result"]:
-            if layer_id == 3:
-                self._save_results(hidden_states)
-                logger.info("save results and exit")
-                sys.exit()
         
         return hidden_states, residual
-
-    def _save_results(self, hidden_states):
-        if self.enable_dp_attention:
-            save_path = global_server_args_dict["eaas_dump_middle_result_path"] + \
-              "/layer_3_results_eaas" + str(self.tp_rank) + ".pt"
-        else:
-            save_path = global_server_args_dict["eaas_dump_middle_result_path"] + \
-              "/layer_3_results_eaas.pt"
-        try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            # Save tensor as numpy array
-            logger.info(f"Saving model results to {save_path}")
-            torch.save(hidden_states, save_path)
-        except Exception as e:
-            logger.error(f"Failed to save results to {save_path}: {e}")
 
 
 class DeepseekV2EaasSingleBatchModel(nn.Module):
@@ -378,7 +356,6 @@ class DeepseekV2EaasSingleBatchModel(nn.Module):
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -389,13 +366,37 @@ class DeepseekV2EaasSingleBatchModel(nn.Module):
 
         hidden_states = self.embed_tokens(input_ids)
         residual = None
-        for i in range(len(self.layers)):
+
+        num_layers = len(self.layers)
+        if global_server_args_dict["eaas_max_layers"] is not None:
+            num_layers = global_server_args_dict["eaas_max_layers"]
+
+        for i in range(num_layers):
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions, hidden_states, forward_batch, residual, 
                 eaas_client=eaas_client, layer_id=i
             )
+
+        if forward_batch.forward_mode.is_decode() \
+            and global_server_args_dict["eaas_dump_middle_result"]:
+                self.tp_rank = get_tensor_model_parallel_rank()
+                if self.tp_rank == 0:
+                    self._save_results(hidden_states, self.tp_rank)
+                    logger.info("save results")
+
         if not forward_batch.forward_mode.is_idle():
             hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
-
+    
+    def _save_results(self, hidden_states, client_id):
+        save_path = global_server_args_dict["eaas_dump_middle_result_path"] + \
+            "/layer_3_results_" + str(client_id) + ".pt"
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            # Save tensor as numpy array
+            logger.info(f"Saving model results to {save_path}")
+            torch.save(hidden_states, save_path)
+        except Exception as e:
+            logger.error(f"Failed to save results to {save_path}: {e}")

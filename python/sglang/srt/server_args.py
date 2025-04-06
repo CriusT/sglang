@@ -186,6 +186,7 @@ class ServerArgs:
     eaas_server_json_path: Optional[str] = None # The path of the server json file
     eaas_dump_middle_result: Optional[bool] = False # Dump middle results (layer_id == 3) for DeepseekV2EaasForCausalLM
     eaas_dump_middle_result_path: Optional[str] = None # The path to dump the middle results
+    eaas_max_layers: Optional[int] = None # The maximum number of layers to use for DeepseekV2EaasForCausalLM
 
     def __post_init__(self):
         # Set missing default values
@@ -1051,6 +1052,12 @@ class ServerArgs:
             action="store_true",
             default=ServerArgs.eaas_use_mock_client,
             help="Use mock client for EaaS",
+        )
+        parser.add_argument(
+            "--eaas-max-layers",
+            type=int,
+            default=ServerArgs.eaas_max_layers,
+            help="The maximum number of layers to use for EaaS",
         )
         
 

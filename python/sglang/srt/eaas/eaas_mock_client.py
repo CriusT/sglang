@@ -25,7 +25,7 @@ class EaasMockClient:
         self.is_connected = False
         self.num_servers = 1
         self.seed_server_last_received_tensors_dict = {} # Dict[seed, List[torch.Tensor]]
-        pass
+        self.client_id = -1
 
     def connect_to_tensor_servers_from_json(
             self, 
@@ -34,6 +34,7 @@ class EaasMockClient:
             client_id: int = 1, 
             cuda_device: int = -1) -> bool:
         self.is_connected = True
+        self.client_id = client_id
         return True
     
     def mock_map_expert_to_server(self, layer: int, expert_ids: List[int]) -> List[int]:

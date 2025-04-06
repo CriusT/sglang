@@ -93,7 +93,7 @@ class DeepseekV2EaasForCausalLM(nn.Module):
         else:
             logger.info(f"Forward single batch in DeepseekV2EaasForCausalLM ")
             hidden_states = self.model(input_ids, positions, forward_batch, eaas_client)
-        
+
         logger.info("logits processor in DeepseekV2EaasForCausalLM")
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
@@ -243,8 +243,6 @@ class DeepseekV2EaasForCausalLM(nn.Module):
                     self_attn.w_scale = self_attn.kv_b_proj.weight_scale
                     if is_hip_:
                         self_attn.w_scale *= 2.0
-    
-    
     
 
 # DeepseekV2EaasForCausalLM.load_weights = DeepseekV2ForCausalLM.load_weights
